@@ -1,88 +1,98 @@
-version: '3'
 services:
   traefik:
-    image: traefik:1.7
-    command: -c /dev/null --web --docker --logLevel=INFO
+    image: traefik:v2.10
     container_name: traefik
+    command:
+      - "--api.insecure=true"
+      - "--providers.docker=true"
+      - "--entrypoints.web.address=:80"
     ports:
-      - '80:80'
-      - '8080:8080' # Dashboard
+      - "81:80"
+      - "8081:8080"
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
+    restart: always
+
   redis:
-    image: redis
+    image: redis:latest
+    container_name: redis
+    restart: always
+
   database:
-    image: wodby/mariadb:10.2-3.1.3
+    image: mariadb:10.5
     container_name: database
     restart: always
     ports:
-      - '3306:3306'
+      - "3307:3306"
     environment:
       MYSQL_USER: db_user
       MYSQL_PASSWORD: db_password
       MYSQL_DATABASE: db_name
       MYSQL_ROOT_PASSWORD: sup3rp4ss
+
   queue:
     image: rabbitmq:3-management
     container_name: queue
     ports:
-      - 15672:15672
-      - 5672:5672
+      - "15672:15672"
+      - "5672:5672"
     environment:
       RABBITMQ_DEFAULT_USER: guest
       RABBITMQ_DEFAULT_PASS: guest
       RABBITMQ_DEFAULT_VHOST: queue
     labels:
-      - traefik.backend=queue
-      - traefik.frontend.rule=Host:queue.tms.localhost
-      - traefik.port=15672
+      - "traefik.enable=true"
+      - "traefik.http.routers.queue.rule=Host(`queue.tms.localhost`)"
+      - "traefik.http.services.queue.loadbalancer.server.port=15672"
 
-  # manager, showing interface to allow add sensors
+  # Manager - Frontend
   manager:
-    image: adaptdk/nginx-rm-default
+    build:
+      context: ./manager
+      dockerfile: Dockerfile
+    container_name: vue_manager
+    ports:
+      - "8080:80"  # Expose Vue.js app
     depends_on:
-      - manager-fpm
-    volumes:
-      - ./manager:/public:cached
-      - ./manager/site.conf:/etc/nginx/conf.d/site.conf
-    extra_hosts:
-      - "manager.tms.local:127.0.0.1"
-    links:
-      - manager-fpm:public
+      - core
+    networks:
+      - app_network
     labels:
-      - traefik.backend=manager
-      - traefik.frontend.rule=Host:manager.tms.local
-      - traefik.port=80
-  manager-fpm:
-    image: adaptdk/php:7.4-fpm-composer-with-redis-no-opcode
-    container_name: manager
-    depends_on:
-      - database
-    volumes:
-      - ./manager:/public:cached
-    working_dir: /
-    command: git clone https://github.com/Harutin1991/temperature-measurement-system-front.git manager; npm install; npm dev
+      - "traefik.enable=true"
+      - "traefik.http.routers.manager.rule=Host(`manager.tms.local`)"
+      - "traefik.http.services.manager.loadbalancer.server.port=80"
 
-# Core, sending data from sensors to system
+  # Core - Backend
   core:
     image: adaptdk/nginx-rm-default
+    depends_on:
+      - core-fpm
     volumes:
-      - ./core:/app:cached
-      - ./core/site.conf:/etc/nginx/conf.d/site.conf
+      - ./core:/app:cached  # Ensure this points to the correct location of your backend code
+      - ./core/site.conf:/etc/nginx/conf.d/site.conf  # Mount site.conf to the right location
     extra_hosts:
-      - "core.tms.local:127.0.0.1"
+      - "core.local:127.0.0.1"
     links:
       - core-fpm:app
     labels:
-      - traefik.backend=core
-      - traefik.frontend.rule=Host:core.tms.local
-      - traefik.port=80
+      - "traefik.enable=true"
+      - "traefik.http.routers.core.rule=Host(`core.local`)"
+      - "traefik.http.services.core.loadbalancer.server.port=80"
+
+
   core-fpm:
-    image: adaptdk/php:7.4-fpm-composer-with-redis-no-opcode
-    container_name: core
+    build:
+      context: ./core
+      dockerfile: Dockerfile
+    container_name: core-fpm-container  # New container name
     depends_on:
       - database
     volumes:
       - ./core:/app:cached
     working_dir: /public
-    command: git clone https://github.com/Harutin1991/temperature-measurement-system-backend.git  core; composer install; cd core; php -S localhost:8082 -t public public/index.php
+    command: php-fpm
+
+
+networks:
+  app_network:
+    driver: bridge
